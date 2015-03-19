@@ -131,6 +131,10 @@
 ;; `org-element-update-syntax' builds proper syntax regexps according
 ;; to current setup.
 
+(defconst org-element--citation-key-re
+  "@[_[:alpha:]]\\(?:[-[:alnum:]_:.#$%&+?<>~/]*[_[:alnum:]]\\)?"
+  "Regexp matching a citation key.")
+
 (defvar org-element-paragraph-separate nil
   "Regexp to separate paragraphs in an Org buffer.
 In the case of lines starting with \"#\" and \":\", this regexp
@@ -206,7 +210,8 @@ specially in `org-element--object-lex'.")
 			       "\\|"))
 		      ;; Objects starting with "@": citations and
 		      ;; export snippets.
-		      "@\\(?:@\\|[_A-Za-z][A-Za-z0-9:.#$%&-+?<>~/]*\\)"
+		      (format "@\\(?:@\\|%s\\)"
+			      (substring org-element--citation-key-re 1))
 		      ;; Objects starting with "{": macro.
 		      "{{{"
 		      ;; Objects starting with "<" : timestamp
@@ -248,15 +253,15 @@ specially in `org-element--object-lex'.")
   "List of recursive element types aka Greater Elements.")
 
 (defconst org-element-all-objects
-  '(bold citation code entity export-snippet footnote-reference
-	 inline-babel-call inline-src-block italic line-break latex-fragment
-	 link macro radio-target statistics-cookie strike-through subscript
-	 superscript table-cell target timestamp underline verbatim)
+  '(bold citation citation-reference code entity export-snippet
+	 footnote-reference inline-babel-call inline-src-block italic line-break
+	 latex-fragment link macro radio-target statistics-cookie strike-through
+	 subscript superscript table-cell target timestamp underline verbatim)
   "Complete list of object types.")
 
 (defconst org-element-recursive-objects
-  '(bold footnote-reference italic link subscript radio-target strike-through
-	 superscript table-cell underline)
+  '(bold citation footnote-reference italic link subscript radio-target
+	 strike-through superscript table-cell underline)
   "List of recursive object types.")
 
 (defconst org-element-object-containers
@@ -360,13 +365,15 @@ match group 2.
 Don't modify it, set `org-element-affiliated-keywords' instead.")
 
 (defconst org-element-object-restrictions
-  (let* ((standard-set (remq 'table-cell org-element-all-objects))
+  (let* ((standard-set
+	  (remq 'citation-reference (remq 'table-cell org-element-all-objects)))
 	 (standard-set-no-line-break (remq 'line-break standard-set))
 	 (minimal-set '(bold code entity italic latex-fragment strike-through
 			     subscript superscript underline superscript
 			     verbatim)))
     `((bold ,@standard-set)
-      (citation ,@(cons 'line-break minimal-set))
+      (citation reference)
+      (citation-reference ,@(cons 'line-break minimal-set))
       (footnote-reference ,@standard-set)
       (headline ,@standard-set-no-line-break)
       (inlinetask ,@standard-set-no-line-break)
@@ -411,7 +418,8 @@ still has an entry since one of its properties (`:title') does.")
   '((citation :prefix :suffix)
     (headline :title)
     (inlinetask :title)
-    (item :tag))
+    (item :tag)
+    (citation-reference :prefix :suffix))
   "Alist between element types and locations of secondary values.")
 
 (defconst org-element--pair-square-table
@@ -2700,76 +2708,153 @@ CONTENTS is the contents of the object."
   "Parse citation object at point, if any.
 
 When at a citation object, return a list whose car is `citation'
-and cdr is a plist with `:begin', `:end', `:key' and
-`:parentheticalp', `:prefix', `:suffix' and `:post-blank'
-keywords.  Otherwise, return nil.
+and cdr is a plist with `:parenthetical', `:prefix', `:suffix',
+`:begin', `:end', `:contents-begin', `:contents-end' and
+`:post-blank' keywords.  Otherwise, return nil.
 
 Assume point is at the beginning of the citation."
   (let ((match (match-string 0)))
-    (cond ((string-prefix-p "@" match)
-	   (and (or (bolp) (memq (char-before) '(?\s ?\t)))
-		(list 'citation
-		      (list :key (substring match 1)
-			    :begin (point)
-			    :end (match-end 0)))))
-	  ((string-prefix-p "[@" match)
+    (cond
+     ((string-prefix-p "@" match)
+      (and (or (bolp) (memq (char-before) '(?\s ?\t)))
 	   (list 'citation
-		 (list :key (substring match 2 -1)
-		       :parentheticalp t
-		       :begin (point)
-		       :end (match-end 0))))
-	  (t
-	   (let ((begin (point))
-		 (before-end (with-syntax-table org-element--pair-square-table
-			       (ignore-errors (scan-lists (point) 1 0)))))
-	     (save-excursion
-	       (search-forward ":")
-	       ;; Ignore blanks between cite type and prefix or key.
-	       (skip-chars-forward " \r\t\n")
-	       (when (and before-end
-			  (save-excursion
-			    (re-search-forward
-			     "@[_A-Za-z][A-Za-z0-9:.#$%&-+?<>~/]*"
-			     before-end t)))
-		 (let* ((post-tag (point))
-			(cite
-			 (list 'citation
-			       (list
-				:key (substring (match-string 0) 1)
-				:parentheticalp (string-prefix-p "[(" match)
-				:begin begin
-				:post-blank (progn (goto-char before-end)
-						   (skip-chars-forward " \t"))
-				:end (point)))))
-		   (when (< post-tag (match-beginning 0))
-		     (org-element-put-property
-		      cite :prefix
-		      (mapcar
-		       (lambda (o)
-			 (org-element-put-property o :parent cite))
-		       (save-match-data
-			 (org-element--parse-objects
-			  post-tag (match-beginning 0) nil
-			  (org-element-restriction 'citation))))))
-		   (when (< (match-end 0) (1- before-end))
-		     (org-element-put-property
-		      cite :suffix
-		      (mapcar
-		       (lambda (o) (org-element-put-property o :parent cite))
-		       (org-element--parse-objects
-			(match-end 0) (1- before-end) nil
-			(org-element-restriction 'citation)))))
-		   cite))))))))
+		 (save-excursion
+		   (list :begin (point)
+			 :contents-begin (point)
+			 :contents-end (goto-char (match-end 0))
+			 :post-blank (skip-chars-forward " \t")
+			 :end (point))))))
+     ((string-prefix-p "[@" match)
+      (list 'citation
+	    (save-excursion
+	      (list :parenthetical t
+		    :begin (point)
+		    :contents-begin (1+ (point))
+		    :contents-end (1- (match-end 0))
+		    :post-blank (progn (goto-char (match-end 0))
+				       (skip-chars-forward " \t"))
+		    :end (point)))))
+     (t
+      (let ((begin (point))
+	    ;; Ignore blanks between cite type and prefix or key.
+	    (start (save-excursion (search-forward ":")
+				   (skip-chars-forward " \r\t\n")
+				   (point)))
+	    (closing (with-syntax-table org-element--pair-square-table
+		       (ignore-errors (scan-lists (point) 1 0)))))
+	(save-excursion
+	  (when (and closing
+		     (re-search-forward org-element--citation-key-re closing t))
+	    ;; Find prefix, if any.
+	    (let ((first-key-end (match-end 0))
+		  (cite
+		   (list 'citation
+			 (save-excursion
+			   (list :parenthetical (string-prefix-p "[(" match)
+				 :begin begin
+				 :post-blank (progn
+					       (goto-char closing)
+					       (skip-chars-forward " \t"))
+				 :end (point)))))
+		  ;; Prefix and suffix can contain the same set of
+		  ;; objects as citation references.
+		  (data (org-element-restriction 'citation-reference)))
+	      ;; `:contents-begin' depends on the presence of
+	      ;; a non-empty common prefix.
+	      (if (not (search-backward ";" start t))
+		  (org-element-put-property cite :contents-begin start)
+		(when (< start (point))
+		  (save-excursion
+		    (skip-chars-backward " \r\t\n")
+		    (org-element-put-property
+		     cite :prefix
+		     (mapcar
+		      (lambda (o) (org-element-put-property o :parent cite))
+		      (org-element--parse-objects start (point) nil data)))))
+		(forward-char)
+		(skip-chars-forward " \r\t\n")
+		(org-element-put-property cite :contents-begin (point)))
+	      ;; `:contents-end' depends on the presence of a non-empty
+	      ;; common suffix.
+	      (goto-char (1- closing))
+	      (skip-chars-backward " \r\t\n")
+	      (let ((end (point)))
+		(if (or (not (search-backward ";" first-key-end t))
+			(re-search-forward org-element--citation-key-re end t))
+		    (org-element-put-property cite :contents-end end)
+		  (when (< (1+ (point)) end)
+		    (save-excursion
+		      (forward-char)
+		      (skip-chars-forward " \r\t\n")
+		      (org-element-put-property
+		       cite :suffix
+		       (mapcar
+			(lambda (o) (org-element-put-property o :parent cite))
+			(org-element--parse-objects (point) end nil data)))))
+		  (org-element-put-property cite :contents-end (point))))
+	      cite))))))))
 
 (defun org-element-citation-interpreter (citation contents)
   "Interpret CITATION object as Org syntax.
-CONTENTS is nil."
+CONTENTS is the contents of the object, as a string."
   (concat "["
-	  (if (org-element-property :parentheticalp citation) "(cite):" "cite:")
-	  (org-element-interpret-data (org-element-property :prefix citation))
-	  (org-element-property :key citation)
-	  (org-element-interpret-data (org-element-property :suffix citation))
+	  (if (org-element-property :parenthetical citation) "(cite):" "cite:")
+	  (let ((prefix (org-element-property :prefix citation)))
+	    (and prefix (concat (org-element-interpret-data prefix) " ; ")))
+	  ;; Remove trailing semi-column.
+	  (substring contents 0 -1)
+	  (let ((suffix (org-element-property :suffix citation)))
+	    (and suffix (concat " ; " (org-element-interpret-data suffix))))
 	  "]"))
+
+
+;;;; Citation Reference
+
+(defun org-element-citation-reference-parser ()
+  "Parse citation reference object at point, if any.
+
+When at a reference, return a list whose car is
+`citation-reference', and cdr is a plist with `:key', `:prefix',
+`:suffix', `:begin', `:end' and `:post-blank'. keywords.
+
+Assume point is at the beginning of the reference."
+  (save-excursion
+    (let ((begin (point)))
+      (re-search-forward org-element--citation-key-re)
+      (let ((key-start (match-beginning 0))
+	    (key-end (match-end 0))
+	    (restriction (org-element-restriction 'citation-reference))
+	    (reference
+	     (list 'citation-reference
+		   (list :key (substring-no-properties (match-string 0) 1)
+			 :begin begin
+			 :end (re-search-forward "[ \t]*\\(?:;[ \t]*\\|$\\)")
+			 :post-blank 0))))
+	(goto-char (match-beginning 0))
+	(when (< begin key-start)
+	  (org-element-put-property
+	   reference :prefix
+	   (mapcar
+	    (lambda (o) (org-element-put-property o :parent reference))
+	    (org-element--parse-objects begin key-start nil restriction))))
+	(when (< key-end (point))
+	  (org-element-put-property
+	   reference :suffix
+	   (mapcar
+	    (lambda (o) (org-element-put-property o :parent reference))
+	    (org-element--parse-objects key-end (point) nil restriction))))
+	reference))))
+
+(defun org-element-citation-reference-interpreter (citation-reference contents)
+  "Interpret CITATION-REFERENCE object as Org syntax.
+CONTENTS is nil."
+  (concat
+   (org-element-interpret-data
+    (org-element-property :prefix citation-reference))
+   "@" (org-element-property :key citation-reference)
+   (org-element-interpret-data
+    (org-element-property :suffix citation-reference))
+   ";"))
 
 
 ;;;; Code
@@ -4311,97 +4396,99 @@ Elements are accumulated into ACC."
 RESTRICTION is a list of object types, as symbols, that should be
 looked after.  This function assumes that the buffer is narrowed
 to an appropriate container (e.g., a paragraph)."
-  (if (memq 'table-cell restriction) (org-element-table-cell-parser)
-    (save-excursion
-      (let ((limit (and org-target-link-regexp
-			(save-excursion
-			  (or (bolp) (backward-char))
-			  (re-search-forward org-target-link-regexp nil t))
-			(match-beginning 1)))
-	    found)
-	(while (and (not found)
-		    (re-search-forward org-element--object-regexp limit t))
-	  (goto-char (match-beginning 0))
-	  (let ((result (match-string 0)))
-	    (setq found
-		  (cond
-		   ((eq (compare-strings result nil nil "call_" nil nil t) t)
-		    (and (memq 'inline-babel-call restriction)
-			 (org-element-inline-babel-call-parser)))
-		   ((eq (compare-strings result nil nil "src_" nil nil t) t)
-		    (and (memq 'inline-src-block restriction)
-			 (org-element-inline-src-block-parser)))
-		   (t
-		    (cl-case (char-after)
-		      (?^ (and (memq 'superscript restriction)
-			       (org-element-superscript-parser)))
-		      (?_ (or (and (memq 'subscript restriction)
-				   (org-element-subscript-parser))
-			      (and (memq 'underline restriction)
-				   (org-element-underline-parser))))
-		      (?* (and (memq 'bold restriction)
-			       (org-element-bold-parser)))
-		      (?/ (and (memq 'italic restriction)
-			       (org-element-italic-parser)))
-		      (?~ (and (memq 'code restriction)
-			       (org-element-code-parser)))
-		      (?= (and (memq 'verbatim restriction)
-			       (org-element-verbatim-parser)))
-		      (?+ (and (memq 'strike-through restriction)
-			       (org-element-strike-through-parser)))
-		      (?@
-		       (if (eq (aref result 1) ?@)
-			   (and (memq 'export-snippet restriction)
-				(org-element-export-snippet-parser))
-			 (and (memq 'citation restriction)
-			      (org-element-citation-parser))))
-		      (?{ (and (memq 'macro restriction)
-			       (org-element-macro-parser)))
-		      (?$ (and (memq 'latex-fragment restriction)
-			       (org-element-latex-fragment-parser)))
-		      (?<
-		       (if (eq (aref result 1) ?<)
-			   (or (and (memq 'radio-target restriction)
-				    (org-element-radio-target-parser))
-			       (and (memq 'target restriction)
-				    (org-element-target-parser)))
-			 (or (and (memq 'timestamp restriction)
-				  (org-element-timestamp-parser))
-			     (and (memq 'link restriction)
-				  (org-element-link-parser)))))
-		      (?\\
-		       (if (eq (aref result 1) ?\\)
-			   (and (memq 'line-break restriction)
-				(org-element-line-break-parser))
-			 (or (and (memq 'entity restriction)
-				  (org-element-entity-parser))
-			     (and (memq 'latex-fragment restriction)
-				  (org-element-latex-fragment-parser)))))
-		      (?\[
-		       (cl-case (aref result 1)
-			 (?\[ (and (memq 'link restriction)
-				   (org-element-link-parser)))
-			 ((?@ ?c ?\() (and (memq 'citation restriction)
-					   (org-element-citation-parser)))
-			 (?f (and (memq 'footnote-reference restriction)
-				  (org-element-footnote-reference-parser)))
-			 ((?% ?/) (and (memq 'statistics-cookie restriction)
-				       (org-element-statistics-cookie-parser)))
-			 (t (or (and (memq 'footnote-reference restriction)
-				     (org-element-footnote-reference-parser))
-				(and (memq 'timestamp restriction)
-				     (org-element-timestamp-parser))
-				(and (memq 'statistics-cookie restriction)
-				     (org-element-statistics-cookie-parser))))))
-		      ;; This is probably a plain link.
-		      (otherwise (and (or (memq 'link restriction)
-					  (memq 'plain-link restriction))
-				      (org-element-link-parser)))))))
-	    (or (eobp) (forward-char))))
-	(cond (found)
-	      ;; Radio link.
-	      ((and limit (memq 'link restriction))
-	       (goto-char limit) (org-element-link-parser)))))))
+  (cond
+   ((memq 'table-cell restriction) (org-element-table-cell-parser))
+   ((memq 'reference restriction) (org-element-citation-reference-parser))
+   (t (save-excursion
+	(let ((limit (and org-target-link-regexp
+			  (save-excursion
+			    (or (bolp) (backward-char))
+			    (re-search-forward org-target-link-regexp nil t))
+			  (match-beginning 1)))
+	      found)
+	  (while (and (not found)
+		      (re-search-forward org-element--object-regexp limit t))
+	    (goto-char (match-beginning 0))
+	    (let ((result (match-string 0)))
+	      (setq found
+		    (cond
+		     ((eq (compare-strings result nil nil "call_" nil nil t) t)
+		      (and (memq 'inline-babel-call restriction)
+			   (org-element-inline-babel-call-parser)))
+		     ((eq (compare-strings result nil nil "src_" nil nil t) t)
+		      (and (memq 'inline-src-block restriction)
+			   (org-element-inline-src-block-parser)))
+		     (t
+		      (cl-case (char-after)
+			(?^ (and (memq 'superscript restriction)
+				 (org-element-superscript-parser)))
+			(?_ (or (and (memq 'subscript restriction)
+				     (org-element-subscript-parser))
+				(and (memq 'underline restriction)
+				     (org-element-underline-parser))))
+			(?* (and (memq 'bold restriction)
+				 (org-element-bold-parser)))
+			(?/ (and (memq 'italic restriction)
+				 (org-element-italic-parser)))
+			(?~ (and (memq 'code restriction)
+				 (org-element-code-parser)))
+			(?= (and (memq 'verbatim restriction)
+				 (org-element-verbatim-parser)))
+			(?+ (and (memq 'strike-through restriction)
+				 (org-element-strike-through-parser)))
+			(?@
+			 (if (eq (aref result 1) ?@)
+			     (and (memq 'export-snippet restriction)
+				  (org-element-export-snippet-parser))
+			   (and (memq 'citation restriction)
+				(org-element-citation-parser))))
+			(?{ (and (memq 'macro restriction)
+				 (org-element-macro-parser)))
+			(?$ (and (memq 'latex-fragment restriction)
+				 (org-element-latex-fragment-parser)))
+			(?<
+			 (if (eq (aref result 1) ?<)
+			     (or (and (memq 'radio-target restriction)
+				      (org-element-radio-target-parser))
+				 (and (memq 'target restriction)
+				      (org-element-target-parser)))
+			   (or (and (memq 'timestamp restriction)
+				    (org-element-timestamp-parser))
+			       (and (memq 'link restriction)
+				    (org-element-link-parser)))))
+			(?\\
+			 (if (eq (aref result 1) ?\\)
+			     (and (memq 'line-break restriction)
+				  (org-element-line-break-parser))
+			   (or (and (memq 'entity restriction)
+				    (org-element-entity-parser))
+			       (and (memq 'latex-fragment restriction)
+				    (org-element-latex-fragment-parser)))))
+			(?\[
+			 (cl-case (aref result 1)
+			   (?\[ (and (memq 'link restriction)
+				     (org-element-link-parser)))
+			   ((?@ ?c ?\() (and (memq 'citation restriction)
+					     (org-element-citation-parser)))
+			   (?f (and (memq 'footnote-reference restriction)
+				    (org-element-footnote-reference-parser)))
+			   ((?% ?/) (and (memq 'statistics-cookie restriction)
+					 (org-element-statistics-cookie-parser)))
+			   (t (or (and (memq 'footnote-reference restriction)
+				       (org-element-footnote-reference-parser))
+				  (and (memq 'timestamp restriction)
+				       (org-element-timestamp-parser))
+				  (and (memq 'statistics-cookie restriction)
+				       (org-element-statistics-cookie-parser))))))
+			;; This is probably a plain link.
+			(otherwise (and (or (memq 'link restriction)
+					    (memq 'plain-link restriction))
+					(org-element-link-parser)))))))
+	      (or (eobp) (forward-char))))
+	  (cond (found)
+		;; Radio link.
+		((and limit (memq 'link restriction))
+		 (goto-char limit) (org-element-link-parser))))))))
 
 (defun org-element--parse-objects (beg end acc restriction)
   "Parse objects between BEG and END and return recursive structure.
