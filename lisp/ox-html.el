@@ -1548,7 +1548,33 @@ CSS classes, then this prefix can be very useful."
   :group 'org-export-html
   :type 'string)
 
-
+(defcustom org-html-klipsify-src nil
+  "Set to non-nil if you would like to make source code blocks editable in exported presentation."
+  :group 'org-export-html
+  :type 'boolean)
+
+(defcustom org-html-klipse-css "https://storage.googleapis.com/app.klipse.tech/css/codemirror.css"
+  "Location of the codemirror css file for use with klipse."
+  :group 'org-export-html
+  :type 'string)
+
+(defcustom org-html-klipse-js "https://storage.googleapis.com/app.klipse.tech/plugin_prod/js/klipse_plugin.min.js"
+  "location of the klipse js source code."
+  :group 'org-export-html
+  :type 'string)
+
+(defcustom org-html-klipse-selection-script
+  "window.klipse_settings = {selector_eval_html: '.src-html',
+                             selector_eval_js: '.src-js',
+                             selector_eval_python_client: '.src-python',
+                             selector_eval_scheme: '.src-scheme',
+                             selector: '.src-clojure',
+                             selector_eval_ruby: '.src-ruby'};"
+  "javascript snippet to activate klipse"
+  :group 'org-export-html
+  :type 'string)
+
+
 ;;; Internal Functions
 
 (defun org-html-xhtml-p (info)
@@ -2041,6 +2067,11 @@ holding export options."
    (format "</%s>\n" (nth 1 (assq 'content (plist-get info :html-divs))))
    ;; Postamble.
    (org-html--build-pre/postamble 'postamble info)
+   ;; klipse library for live code blocks, if requested
+   (if org-html-klipsify-src
+       (concat "<script>"org-html-klipse-selection-script "</script>
+<script src=\"" org-html-klipse-js "\"></script>
+<link rel=\"stylesheet\" type=\"text/css\" href=\"" org-html-klipse-css "\"/>"))
    ;; Closing document.
    "</body>\n</html>"))
 
