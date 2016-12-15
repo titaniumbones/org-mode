@@ -3345,11 +3345,13 @@ CONTENTS holds the contents of the item.  INFO is a plist holding
 contextual information."
   (if (org-export-read-attribute :attr_html src-block :textarea)
       (org-html--textarea-block src-block)
-    (let ((lang (org-element-property :language src-block))
+    (let* ((lang (org-element-property :language src-block))
 	  (code (org-html-format-code src-block info))
 	  (label (let ((lbl (and (org-element-property :name src-block)
 				 (org-export-get-reference src-block info))))
-		   (if lbl (format " id=\"%s\"" lbl) ""))))
+		   (if lbl (format " id=\"%s\"" lbl) "")))
+	  (klipsify  (and  org-reveal-klipsify-src
+                           (member lang '("javascript" "js" "ruby" "scheme" "clojure" "php" "html")))))
       (if (not lang) (format "<pre class=\"example\"%s>\n%s</pre>" label code)
 	(format "<div class=\"org-src-container\">\n%s%s\n</div>"
 		;; Build caption.
@@ -3366,8 +3368,8 @@ contextual information."
 			      listing-number
 			      (org-trim (org-export-data caption info))))))
 		;; Contents.
-		(format "<pre class=\"src src-%s\"%s>%s</pre>"
-			lang label code))))))
+		(format "<pre class=\"src src-%s\"%s%s>%s</pre>"
+			lang label (if (and klipsify (string= lang "html"))" data-editor-type=\"html\"" "") code))))))
 
 ;;;; Statistics Cookie
 
