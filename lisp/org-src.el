@@ -166,6 +166,14 @@ other-frame        Use `switch-to-buffer-other-frame' to display edit buffer.
 	  (const other-window)
 	  (const reorganize-frame)))
 
+(defcustom org-src-restore-saved-window-config t
+  "Whether to restore windows to previous configuration.
+When non-nil (default), on exit from a source buffer, org will
+try to restore the window configuration that was active when
+the source buffer was created."
+  :group 'org-edit-structure
+  :type 'boolean)
+
 (defvar org-src-mode-hook nil
   "Hook run after Org switched a source code snippet to its Emacs mode.
 \\<org-mode-map>
@@ -1173,8 +1181,8 @@ Throw an error if there is no such buffer."
     ;; Clean up left-over markers and restore window configuration.
     (set-marker beg nil)
     (set-marker end nil)
-    (when org-src--saved-temp-window-config
-      (set-window-configuration org-src--saved-temp-window-config)
+    (when (and  org-src--saved-temp-window-config) 
+	  (set-window-configuration org-src--saved-temp-window-config)
       (setq org-src--saved-temp-window-config nil))))
 
 
